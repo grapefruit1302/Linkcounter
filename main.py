@@ -1,8 +1,10 @@
-from easysnmp import Session
-from zabbix_utils import get_switch_ip
+from easysnmp import Session, EasySNMPError, EasySNMPTimeoutError
+from zabbix_utils import get_switch_ip, get_zabbix_triggers, transform_host_name
+from billing_utils import add_TD, close_TD
 import datetime
 import struct
 import re
+import time
 import binascii
 
 class SwitchFactory:
@@ -15,26 +17,36 @@ class SwitchFactory:
         self.zabbix_user = zabbix_user
         self.zabbix_password = zabbix_password
 
-        # print(ip)
+        try:
+            # Виконати підключення до комутатора
+            model_oid = "1.3.6.1.2.1.1.1.0"
+            self.session = Session(hostname=self.ip, community=self.community_string, version=self.version)
+            model_value = self.session.get(model_oid).value
+            print(model_value)
+            
+            # Перевірити тип комутатора і повернути відповідний об'єкт
+            if "D-Link" in model_value or "DES" in model_value or "DGS" in model_value:
+                return Dlink(self.ip, self.community_string, self.version, self.core_mac_address, self.zabbix_url, self.zabbix_user, self.zabbix_password)
+            elif "ECS" in model_value or "Edge" in model_value:
+                return Edge_Core(self.ip, self.community_string, self.version, self.core_mac_address, self.zabbix_url, self.zabbix_user, self.zabbix_password)
+            elif "BDCOM" in model_value and "GP3600" in model_value: 
+                return BDCOM(self.ip, self.community_string, self.version, self.core_mac_address, self.zabbix_url, self.zabbix_user, self.zabbix_password, "GPON")
+            elif "BDCOM" in model_value and "GP3600" not in model_value and "3310B" not in model_value: 
+                return BDCOM(self.ip, self.community_string, self.version, self.core_mac_address, self.zabbix_url, self.zabbix_user, self.zabbix_password, "EPON")
+            elif "BDCOM" in model_value and "3310B" in model_value: 
+                return BDCOM(self.ip, self.community_string, self.version, self.core_mac_address, self.zabbix_url, self.zabbix_user, self.zabbix_password, "3310B")
+            elif "MGS" in model_value: 
+                return Zyxel(self.ip, self.community_string, self.version, self.core_mac_address, self.zabbix_url, self.zabbix_user, self.zabbix_password)
+            else:
+                return None
 
-        model_oid = "1.3.6.1.2.1.1.1.0"
-        self.session = Session(hostname=self.ip, community=self.community_string, version=self.version)
-        model_value = self.session.get(model_oid).value
-        print(model_value)
-        
-        if "D-Link" in model_value or "DES" in model_value or "DGS" in model_value:
-            return Dlink(self.ip, self.community_string, self.version, self.core_mac_address, self.zabbix_url, self.zabbix_user, self.zabbix_password)
-        elif "ECS" in model_value or "Edge" in model_value:
-            return Edge_Core(self.ip, self.community_string, self.version, self.core_mac_address, self.zabbix_url, self.zabbix_user, self.zabbix_password)
-        elif "BDCOM" in model_value and "GP3600" in model_value: 
-            return BDCOM(self.ip, self.community_string, self.version, self.core_mac_address, self.zabbix_url, self.zabbix_user, self.zabbix_password, "GPON")
-        elif "BDCOM" in model_value and "GP3600" not in model_value and "3310B" not in model_value: 
-            return BDCOM(self.ip, self.community_string, self.version, self.core_mac_address, self.zabbix_url, self.zabbix_user, self.zabbix_password, "EPON")
-        elif "BDCOM" in model_value and "3310B" in model_value: 
-            return BDCOM(self.ip, self.community_string, self.version, self.core_mac_address, self.zabbix_url, self.zabbix_user, self.zabbix_password, "3310B")
-        elif "MGS" in model_value: 
-            return Zyxel(self.ip, self.community_string, self.version, self.core_mac_address, self.zabbix_url, self.zabbix_user, self.zabbix_password)
-        else:
+        except EasySNMPError as e:
+            # Опрацювати помилку EasySNMPError
+            print("Помилка EasySNMP: ", e)
+            return None
+        except TimeoutError:
+            # Обробити помилку зв'язку
+            print("Комутатор недоступний (timed out while connecting to remote host).")
             return None
             
 class BDCOM_LOC_POW:
@@ -561,17 +573,7 @@ class Zyxel :
                 active_user_count += 1
 
         return active_user_count
-
     
-ip = ""
-community_string = "public"
-version = 2
-core_mac_dict = {'88:90:09:FE:C4:6D', '88:90:09:FE:C4:6E'}
-zabbix_url = ''
-zabbix_user = ''
-zabbix_password = ''
-model_oid = "1.3.6.1.2.1.1.1.0"
-
 def traverse_switch_hierarchy(current_ip, active_users=0):
     switch_factory = SwitchFactory()
     switch_object = switch_factory.create_switch(current_ip, core_mac_dict, zabbix_url, zabbix_user, zabbix_password)
@@ -585,19 +587,54 @@ def traverse_switch_hierarchy(current_ip, active_users=0):
         
     return active_users
 
-session = Session(hostname=ip, community=community_string, version=version, use_enums=True)
-model_value = session.get(model_oid).value
+#ip = "10.69.96.2"
+community_string = "public"
+version = 2
+core_mac_dict = {'88:90:09:FE:C4:6D', '88:90:09:FE:C4:6E'}
+zabbix_url = ''
+zabbix_user = ''
+zabbix_password = ''
+model_oid = "1.3.6.1.2.1.1.1.0"
+filter_descriptions = ["No main power"]
+exceptions = []
 
-if "BDCOM" in model_value or "BDCOM(tm)" in model_value:
-    object = BDCOM_LOC_POW(ip, community_string, version, core_mac_dict, zabbix_url, zabbix_user, zabbix_password)
-    if object.check_power_issues(object.get_onu_dereg_time()):
-        print(traverse_switch_hierarchy(ip))
-    else:
-        print(traverse_switch_hierarchy(ip))
-        act_users = traverse_switch_hierarchy(ip)
-        print({"active users": act_users, "note": "Power local check"})
-else:
-    print(traverse_switch_hierarchy(ip))
+while True:
+    triggers = get_zabbix_triggers(zabbix_user, zabbix_password, filter_descriptions)
+    #triggers = [{'new_triggers': [{'trigger_id': '776333', 'description': 'No main power - Battery', 'host_name': 'knock-olt-zr-iv.te.clb', 'last_change_datetime': datetime.datetime(2024, 1, 4, 18, 10, 11)}], 'unresolved_triggers': [{'trigger_id': '776372', 'description': 'No main power - Battery', 'host_name': 'sw-test-main-3.te.clb', 'last_change_datetime': datetime.datetime(2024, 1, 4, 18, 10, 11)}, {'trigger_id': '780399', 'description': 'No main power - Battery', 'host_name': 'sw-zr-th-1.te.clb', 'last_change_datetime': datetime.datetime(2024, 2, 7, 12, 20, 16)}, {'trigger_id': '543351', 'description': 'No main power -', 'host_name': 'knock-olt-tb-st.te.clb', 'last_change_datetime': datetime.datetime(2024, 2, 7, 16, 15, 19)}, {'trigger_id': '816280', 'description': 'No main power -', 'host_name': 'knock-test-main.te.clb_2', 'last_change_datetime': datetime.datetime(2024, 2, 7, 16, 17, 54)}, {'trigger_id': '755878', 'description': 'No main power, low battery -', 'host_name': 'knock-olt-tb-st.te.clb', 'last_change_datetime': datetime.datetime(2024, 2, 7, 21, 34, 50)}], 'resolved_triggers': []}]
+    print(triggers)
+    if triggers is not None:
+        for trigger_info in triggers:
+            for trigger in trigger_info['new_triggers']:
+                switch_ip = get_switch_ip(zabbix_url, zabbix_user, zabbix_password, [transform_host_name(trigger['host_name'], exceptions)])
+                ip = switch_ip[transform_host_name(trigger['host_name'], exceptions)]
+                print(ip)
+                max_retries = 3
+                for retry in range(max_retries):
+                    try:
+                        session = Session(hostname=ip, community=community_string, version=version, use_enums=True, timeout=1)
+                        model_value = session.get(model_oid).value
+
+                        if "BDCOM" in model_value or "BDCOM(tm)" in model_value:
+                            object = BDCOM_LOC_POW(ip, community_string, version, core_mac_dict, zabbix_url, zabbix_user, zabbix_password)
+                            if object.check_power_issues(object.get_onu_dereg_time()):
+                                print(traverse_switch_hierarchy(ip))
+                            else:
+                                print(traverse_switch_hierarchy(ip))
+                                act_users = traverse_switch_hierarchy(ip)
+
+                                add_TD(trigger['last_change_datetime'], "region", trigger['host_name'],  "без основного живлення// \n {act_users} акт// \n розреєстрованих ону в один час не виявлено")
+
+                                print({"time": trigger['last_change_datetime'], "switch": trigger['host_name'], "note": f"без основного живлення// \n {act_users} акт// \n розреєстрованих ону в один час не виявлено"})
+                        else:
+                            print(traverse_switch_hierarchy(ip))
+                        break
+                    except EasySNMPTimeoutError:
+                        print(f"Таймаут {ip}. Спроба {retry+1}/{max_retries}")
+                        time.sleep(1)
+                    except EasySNMPError as e:
+                        print(f"Error EasySNMP - {ip}: {e}")
+                        break
+    time.sleep(5)
 
 # obj = BDCOM(ip, community_string, version, core_mac_dict, zabbix_url, zabbix_user, zabbix_password, "3310B")
 # print(obj.get_active_onu())
