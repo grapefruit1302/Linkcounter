@@ -590,13 +590,13 @@ def traverse_switch_hierarchy(current_ip, active_users=0):
 #ip = "10.69.96.2"
 community_string = "public"
 version = 2
-core_mac_dict = {'88:90:09:FE:C4:6D', '88:90:09:FE:C4:6E'}
-zabbix_url = 'https://zabbix6.columbus.te.ua'
-zabbix_user = 'yu.petrovskyi'
-zabbix_password = '7N2_55c!vDg@Kc'
+core_mac_dict = {}
+zabbix_url = ''
+zabbix_user = ''
+zabbix_password = ''
 model_oid = "1.3.6.1.2.1.1.1.0"
 filter_descriptions = ["No main power"]
-exceptions = [("knock-olt-cm-iv-1.te.clb", "olt-cm-iv-1.te.clb")
+exceptions = [("", "")
               ]
 
 while True:
