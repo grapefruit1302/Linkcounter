@@ -35,6 +35,7 @@ class MyZabbixAPI:
         try:
             with open("previous_triggers.json", "r") as file:
                 self.previous_triggers = set(json.load(file))
+                print(self.previous_triggers)
         except FileNotFoundError:
             pass
 
@@ -57,7 +58,68 @@ class MyZabbixAPI:
         response = requests.post(self.api_url, headers=headers, data=json.dumps(payload))
         result = response.json()
         return result
-        
+    
+    def get_node_by_host(self, host_name):
+        auth_token = self.login()
+        host_id = None
+
+        if auth_token:
+            get_hosts_data = {
+                "jsonrpc": "2.0",
+                "method": "host.get",
+                "params": {
+                    "output": ["hostid"],
+                    "filter": {"host": host_name}
+                },
+                "auth": auth_token,
+                "id": 1,
+            }
+
+            response = requests.post(self.api_url, json=get_hosts_data)
+            hosts_result = response.json()
+
+            if 'result' in hosts_result:
+                host_id = hosts_result['result'][0]['hostid']
+
+        if host_id:
+            group_payload = {
+                "jsonrpc": "2.0",
+                "method": "host.get",
+                "params": {
+                    "output": ["groups"],
+                    "selectGroups": "extend",
+                    "hostids": host_id
+                },
+                "auth": auth_token,
+                "id": 1
+            }
+            group_response = requests.post(self.api_url, json=group_payload)
+            group_result = group_response.json()
+
+            groups = []
+            if group_result.get("result"):
+                groups = group_result["result"][0]["groups"]
+            node = None
+
+            for group in groups:
+                if "[Network]/Тернопіль/Columbus" in group["name"]:
+                    node = "TE"
+                    break
+                elif "[Network]/Тернопіль/Bitternet" in group["name"]:
+                    node = "TEO"
+                    break
+                elif "[Network]/Червоноград/Володимир" in group["name"] and "-vv-" in host_name:
+                    node = "VV"
+                    break
+                elif "-cg-" in host_name:
+                    node = "CG"
+                    break
+
+            return node
+
+        return "Not found"
+
+                
 
     def get_active_triggers(self, filter_description):
         trigger_data_list = []
@@ -92,18 +154,18 @@ class MyZabbixAPI:
                 last_change = trigger['lastchange']
                 last_change_datetime = datetime.datetime.fromtimestamp(int(last_change))
 
-                # Отримання назви панелі
-                panel_name = self.get_host_panel_name(host_id)
-
                 trigger_data = {
                     'trigger_id': trigger_id,
                     'description': trigger['description'],
                     'host_name': host_name,
-                    'panel_name': panel_name,
+                    'region': self.get_node_by_host(host_name),
                     'last_change_datetime': last_change_datetime
                 }
 
                 trigger_data_list.append(trigger_data)
+
+
+            print(self.previous_triggers)
 
             new_triggers = current_triggers - self.previous_triggers
             unresolved_triggers = self.previous_triggers & current_triggers
@@ -124,7 +186,7 @@ class MyZabbixAPI:
                     trigger_info['unresolved_triggers'].append(trigger)
 
             for trigger_id in resolved_triggers:
-                trigger_info['resolved_triggers'].append(trigger_id)
+                trigger_info['resolved_triggers'].append(trigger)
 
             self.previous_triggers = current_triggers
             self.save_previous_triggers()
@@ -133,31 +195,6 @@ class MyZabbixAPI:
 
         else:
             print("No active triggers found for the specified description.")
-
-    def get_host_panel_name(self, host_id):
-        get_host_data = {
-            "jsonrpc": "2.0",
-            "method": "host.get",
-            "params": {
-                "output": ["hostid", "name"],
-                "selectGroups": ["name"],
-                "hostids": [host_id]
-            },
-            "auth": self.auth_token,
-            "id": 4,
-        }
-
-        response = requests.post(self.api_url, json=get_host_data)
-        host_result = response.json()
-
-        if 'result' in host_result:
-            host = host_result['result'][0]
-            # Перевірка наявності панелі
-            if 'groups' in host and host['groups']:
-                for group in host['groups']:
-            
-                    return group['name']
-        return None
 
     def logout(self):
         logout_data = {
@@ -184,6 +221,15 @@ def get_zabbix_triggers(username, password, filter_descriptions):
     zabbix_api.logout()
     
     return all_trigger_info
+
+
+def get_region(username, password, host):
+    api_url = 'https://zabbix6.columbus.te.ua/api_jsonrpc.php'
+    zabbix_api = MyZabbixAPI(api_url, username, password)
+    zabbix_api.login()
+    
+    return zabbix_api.get_node_by_host(host)
+
 
 
 
@@ -227,10 +273,20 @@ def transform_host_name(host_name, exceptions):
 
     
 
-# if __name__ == "__main__":
-#     api_url = ''
-#     username = ''
-#     password = ''
+if __name__ == "__main__":
+    api_url = 'https://zabbix6.columbus.te.ua/api_jsonrpc.php'
+    username = 'yu.petrovskyi'
+    password = '7N2_55c!vDg@Kc'
+    zabbix = MyZabbixAPI(api_url, username, password)
+    zabbix.login()
+    trigger_id = '11'
+
+    print(get_region(username, password, "sw-te-my-6-2.te.clb"))
+    
+    # if __name__ == "__main__":
+#     api_url = 'https://zabbix6.columbus.te.ua/api_jsonrpc.php'
+#     username = 'yu.petrovskyi'
+#     password = '7N2_55c!vDg@Kc'
 #     zabbix = MyZabbixAPI(api_url, username, password)
 #     zabbix.login()
 #     trigger_id = '11'
