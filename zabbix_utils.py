@@ -35,7 +35,7 @@ class MyZabbixAPI:
         try:
             with open("previous_triggers.json", "r") as file:
                 self.previous_triggers = set(json.load(file))
-                print(self.previous_triggers)
+                #print(self.previous_triggers)
         except FileNotFoundError:
             pass
 
@@ -121,10 +121,7 @@ class MyZabbixAPI:
 
                 
 
-    def get_active_triggers(self, filter_description):
-        trigger_data_list = []
-        current_triggers = set()
-
+    def get_current_triggers(self, filter_description):
         get_triggers_data = {
             "jsonrpc": "2.0",
             "method": "trigger.get",
@@ -143,14 +140,14 @@ class MyZabbixAPI:
         trigger_result = response.json()
 
         if 'result' in trigger_result:
-            print("Current time: " + str(datetime.datetime.now()))
+            trigger_data_list = []
+            current_triggers = set()
 
             for trigger in trigger_result['result']:
                 trigger_id = trigger['triggerid']
                 current_triggers.add(trigger_id)
 
                 host_name = trigger['hosts'][0]['name'] if trigger['hosts'] else 'Unknown'
-                host_id = trigger['hosts'][0]['hostid'] if trigger['hosts'] else None
                 last_change = trigger['lastchange']
                 last_change_datetime = datetime.datetime.fromtimestamp(int(last_change))
 
@@ -162,39 +159,46 @@ class MyZabbixAPI:
                     'last_change_datetime': last_change_datetime
                 }
 
-                trigger_data_list.append(trigger_data)
+                if("olt-cn" not in trigger_data['host_name']):
+                    trigger_data_list.append(trigger_data)
 
-
-            print(self.previous_triggers)
-
-            new_triggers = current_triggers - self.previous_triggers
-            unresolved_triggers = self.previous_triggers & current_triggers
-            resolved_triggers = self.previous_triggers - current_triggers
-
-            trigger_info = {
-                'new_triggers': [],
-                'unresolved_triggers': [],
-                'resolved_triggers': []
-            }
-
-            for trigger in trigger_data_list:
-                if trigger['trigger_id'] in new_triggers and (trigger['host_name'].endswith('.te.clb') or trigger['host_name'].endswith('.te.clb_2')):
-                    trigger_info['new_triggers'].append(trigger)
-
-            for trigger in trigger_data_list:
-                if trigger['trigger_id'] in unresolved_triggers and (trigger['host_name'].endswith('.te.clb') or trigger['host_name'].endswith('.te.clb_2')):
-                    trigger_info['unresolved_triggers'].append(trigger)
-
-            for trigger_id in resolved_triggers:
-                trigger_info['resolved_triggers'].append(trigger)
-
-            self.previous_triggers = current_triggers
-            self.save_previous_triggers()
-
-            return trigger_info
+            return trigger_data_list
 
         else:
             print("No active triggers found for the specified description.")
+
+
+    def process_triggers(self, filter_description, domains):
+
+        trigger_data_list = self.get_current_triggers(filter_description)
+        trigger_info = {
+        'new_triggers': [],
+        'resolved_triggers': []
+    }
+
+        current_trigger_ids = {trigger['trigger_id'] for trigger in trigger_data_list}
+
+        new_trigger_ids = current_trigger_ids - self.previous_triggers
+        resolved_trigger_ids = self.previous_triggers - current_trigger_ids
+
+        unresolved_trigger_ids = self.previous_triggers & current_trigger_ids
+
+        for trigger in trigger_data_list:
+            if trigger['trigger_id'] in unresolved_trigger_ids:
+                print(f"{trigger['trigger_id']} - {trigger['host_name']}")
+
+        for trigger in trigger_data_list:
+            if trigger['trigger_id'] in new_trigger_ids and (trigger['host_name'].endswith('.te.clb') or trigger['host_name'].endswith('.te.clb_2')):
+                trigger_info['new_triggers'].append(trigger)
+
+
+        for trigger_id in resolved_trigger_ids:
+            trigger_info['resolved_triggers'].append(trigger)
+
+        self.previous_triggers = current_trigger_ids
+        self.save_previous_triggers()
+
+        return trigger_info
 
     def logout(self):
         logout_data = {
@@ -208,14 +212,14 @@ class MyZabbixAPI:
         requests.post(self.api_url, json=logout_data)
 
 
-def get_zabbix_triggers(username, password, filter_descriptions):
+def get_zabbix_triggers(username, password, filter_descriptions, domains):
     api_url = 'https://zabbix6.columbus.te.ua/api_jsonrpc.php'
     zabbix_api = MyZabbixAPI(api_url, username, password)
     zabbix_api.login()
     
     all_trigger_info = []
     for filter_description in filter_descriptions:
-        trigger_info = zabbix_api.get_active_triggers(filter_description)
+        trigger_info = zabbix_api.process_triggers(filter_description, domains)
         all_trigger_info.append(trigger_info)
         
     zabbix_api.logout()
@@ -231,8 +235,6 @@ def get_region(username, password, host):
     return zabbix_api.get_node_by_host(host)
 
 
-
-
 def get_switch_ip(zabbix_url, zabbix_user, zabbix_password, switch_names):
     zabbix = ZabbixAPI(zabbix_url)
     zabbix.login(zabbix_user, zabbix_password)
@@ -243,10 +245,9 @@ def get_switch_ip(zabbix_url, zabbix_user, zabbix_password, switch_names):
         if node and 'interfaces' in node[0]:
             switch_ip = node[0]['interfaces'][0]['ip']
             switch_ips[switch_name] = switch_ip
+            
 
     return switch_ips
-
-
 
 
 def transform_host_name(host_name, exceptions):
@@ -271,4 +272,31 @@ def transform_host_name(host_name, exceptions):
         return host_name
 
 
- 
+if __name__ == "__main__":
+    api_url = 'https://zabbix6.columbus.te.ua/api_jsonrpc.php'
+    username = 'yu.petrovskyi'
+    password = '7N2_55c!vDg@Kc'
+    zabbix = MyZabbixAPI(api_url, username, password)
+    zabbix.login()
+    trigger_id = '11'
+
+    # print(zabbix.process_triggers())
+    
+    # if __name__ == "__main__":
+#     api_url = 'https://zabbix6.columbus.te.ua/api_jsonrpc.php'
+#     username = 'yu.petrovskyi'
+#     password = '7N2_55c!vDg@Kc'
+#     zabbix = MyZabbixAPI(api_url, username, password)
+#     zabbix.login()
+#     trigger_id = '11'
+#     comment_text = "Тестовий коментар"
+
+#     result = zabbix.comment_trigger(trigger_id, comment_text)
+
+#         # Перевірка результату
+#     if 'result' in result:
+#         print("Тригер успішно коментований.")
+#     else:
+#         print("Помилка: ", result['error']['data'])
+
+
