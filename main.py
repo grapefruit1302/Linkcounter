@@ -6,6 +6,9 @@ import struct
 import re
 import time
 import configparser
+import multiprocessing
+from functools import partial
+import asyncio
 
 class SwitchFactory:
     def create_switch(self, ip, core_mac_dict, zabbix_url, zabbix_user, zabbix_password):
@@ -251,7 +254,6 @@ class BDCOM:
     def get_switches(self):
         port_descriptions = self.get_description_ports("All")
         uplink_data = self.search_uplink()
-
         uplink_description = list(uplink_data.values())[0] if uplink_data else None
         switch_names = [desc for desc in port_descriptions.values() if desc and ("sw-" in desc or "gw-" in desc or "sr-te" in desc or ("olt-" in desc and "knock-" not in desc)) and desc != uplink_description]
 
@@ -272,6 +274,7 @@ class BDCOM:
                 active_user_count += 1
 
         return active_user_count + self.get_active_onu()
+
 
 class Edge_Core:
     def __init__(self, ip_address, community, version, core_mac_address, zabbix_url, zabbix_user, zabbix_password):
@@ -587,71 +590,95 @@ def traverse_switch_hierarchy(current_ip, active_users=0):
         
     return active_users
 
-#ip = "10.69.96.2"
-community_string = "public"
-version = 2
-core_mac_dict = {}
-zabbix_url = ''
-zabbix_user = ''
-zabbix_password = ''
-model_oid = "1.3.6.1.2.1.1.1.0"
-filter_descriptions = ["No main power"]
-exceptions = [("", "")
-              ]
+config = configparser.ConfigParser()
+config.read('config.ini')
 
-while True:
-    triggers = get_zabbix_triggers(zabbix_user, zabbix_password, filter_descriptions)
-    #triggers = [{'new_triggers': [], 'unresolved_triggers': [{'trigger_id': '776372', 'description': 'No main power - Battery', 'host_name': 'sw-test-main-3.te.clb', 'region': 'TEO', 'last_change_datetime': datetime.datetime(2024, 1, 4, 18, 10, 11)}, {'trigger_id': '543351', 'description': 'No main power -', 'host_name': 'knock-olt-tb-st.te.clb', 'region': 'TEO', 'last_change_datetime': datetime.datetime(2024, 2, 13, 20, 38, 33)}, {'trigger_id': '755878', 'description': 'No main power, low battery -', 'host_name': 'knock-olt-tb-st.te.clb', 'region': 'TEO', 'last_change_datetime': datetime.datetime(2024, 2, 14, 2, 54, 19)}], 'resolved_triggers': [{'trigger_id': '755878', 'description': 'No main power, low battery -', 'host_name': 'knock-olt-tb-st.te.clb', 'region': 'TEO', 'last_change_datetime': datetime.datetime(2024, 2, 14, 2, 54, 19)}]}]
-    print(triggers)
-    if triggers is not None:
-        for trigger_info in triggers:
-            #робота з новими тригерами
-            for trigger in trigger_info['new_triggers']:
-                print(trigger['host_name'])
-                if("knock-gw-" not in trigger['host_name'] or "sr-te" not in trigger['host_name']):
-                    switch_ip = get_switch_ip(zabbix_url, zabbix_user, zabbix_password, [transform_host_name(trigger['host_name'], exceptions)])
-                    ip = switch_ip[transform_host_name(trigger['host_name'], exceptions)]
-                    print(ip)
-                    max_retries = 3
-                    for retry in range(max_retries):
-                        try:
-                            session = Session(hostname=ip, community=community_string, version=version, use_enums=True, timeout=1)
-                            model_value = session.get(model_oid).value
 
-                            if "BDCOM" in model_value or "BDCOM(tm)" in model_value:
-                                object = BDCOM_LOC_POW(ip, community_string, version, core_mac_dict, zabbix_url, zabbix_user, zabbix_password)
-                                if object.check_power_issues(object.get_onu_dereg_time()):
-                                    print(traverse_switch_hierarchy(ip))
-                                    act_users = traverse_switch_hierarchy(ip)
+community_string = config.get('Snmp', 'community_string')
+version = config.getint('Snmp', 'version')
+core_mac_dict = eval(config.get('Hardware', 'core_mac_dict'))
+zabbix_url = config.get('Zabbix', 'zabbix_url')
+zabbix_user = config.get('Zabbix', 'zabbix_user')
+zabbix_password = config.get('Zabbix', 'zabbix_password')
+model_oid = config.get('Snmp', 'model_oid')
+filter_descriptions = eval(config.get('Zabbix', 'filter_descriptions'))
+exceptions_str = config.get('Exceptions', 'exceptions')
+exceptions = [tuple(exception.strip().split(':')) for exception in exceptions_str.split(',')]
+time_sleep = config.get('General', 'time_sleep')
+max_retries = config.get('General', 'max_retries')
+no_power_message = config.get('TemplatesTD', 'no_power_message')
+act_users_message = config.get('TemplatesTD', 'act_users_message')
+no_onu_deregistered_message = config.get('TemplatesTD', 'no_onu_deregistered_message')
+domains = config.get('Domains', 'domains')
 
-                                    add_TD(trigger['last_change_datetime'], get_region(zabbix_user, zabbix_password, trigger['host_name']), trigger['host_name'],  f"без основного живлення// \n {act_users} акт//")
+async def process_trigger(trigger, zabbix_url, zabbix_user, zabbix_password, exceptions, core_mac_dict, community_string, version, model_oid):
+    start_time = datetime.datetime.now()
+    host_name = trigger['host_name']
+    description = trigger['description']
+    last_change_datetime = trigger['last_change_datetime']
 
-                                    #print({"time": trigger['last_change_datetime'], "switch": trigger['host_name'], "note": f"без основного живлення// \n {act_users} акт//"})
-                                else:
-                                    print(traverse_switch_hierarchy(ip))
-                                    act_users = traverse_switch_hierarchy(ip)
+    if "knock-gw-" not in host_name and "sr-te" not in host_name:
+        switch_ip = get_switch_ip(zabbix_url, zabbix_user, zabbix_password, [transform_host_name(host_name, exceptions)])
+        ip = switch_ip[transform_host_name(host_name, exceptions)]
+        print(ip)
 
-                                    add_TD(trigger['last_change_datetime'], get_region(zabbix_user, zabbix_password, trigger['host_name']), trigger['host_name'],  f"без основного живлення// \n {act_users} акт// \n розреєстрованих ону в один час не виявлено")
+        for retry in range(int(max_retries)):
+            try:
+                session = Session(hostname=ip, community=community_string, version=version, use_enums=True, timeout=1)
+                model_value = session.get(model_oid).value
 
-                                    #print({"time": trigger['last_change_datetime'], "switch": trigger['host_name'], "note": f"без основного живлення// \n {act_users} акт// \n розреєстрованих ону в один час не виявлено"})
-                            else:
-                                print(traverse_switch_hierarchy(ip))
-                            break
-                        except EasySNMPTimeoutError:
-                            print(f"Таймаут {ip}. Спроба {retry+1}/{max_retries}")
-                            time.sleep(1)
-                        except EasySNMPError as e:
-                            print(f"Error EasySNMP - {ip}: {e}")
-                            break
+                if "BDCOM" in model_value or "BDCOM(tm)" in model_value:
+                    object = BDCOM_LOC_POW(ip, community_string, version, core_mac_dict, zabbix_url, zabbix_user, zabbix_password)
+                    if object.check_power_issues(object.get_onu_dereg_time()):
+                        act_users = traverse_switch_hierarchy(ip)
+                        add_TD(last_change_datetime, get_region(zabbix_user, zabbix_password, host_name), host_name,  f"{no_power_message} \n {act_users} {act_users_message} \n")
+                    else:
+                        act_users = traverse_switch_hierarchy(ip)
+                        add_TD(last_change_datetime, get_region(zabbix_user, zabbix_password, host_name), host_name,  f"{no_power_message} \n {act_users} {act_users_message} \n {no_onu_deregistered_message}")
                 else:
-                    print("check manually: " + trigger['host_name'])
-            #робота з вирішеними тригерами
-            for trigger in trigger_info['resolved_triggers']:
-                close_TD(trigger['last_change_datetime'], get_region(zabbix_user, zabbix_password, trigger['host_name']), trigger['host_name'])
-                
+                    act_users = traverse_switch_hierarchy(ip)
+                    add_TD(last_change_datetime, get_region(zabbix_user, zabbix_password, host_name), host_name,  f"{no_power_message} \n {act_users} {act_users_message} \n")
+                break
+            except EasySNMPTimeoutError:
+                print(f"Таймаут {ip}. Спроба {retry+1}/{max_retries}")
+                time.sleep(1)
+            except EasySNMPError as e:
+                print(f"Error EasySNMP - {ip}: {e}")
+                break
+    else:
+        print("check manually:", host_name)
 
-    time.sleep(5)
+    end_time = datetime.datetime.now()  
+    execution_time = end_time - start_time  
+    print("Час виконання:", execution_time)
 
+    return host_name, last_change_datetime
+
+
+async def close_trigger(solution_time, region, host):
+    close_TD(solution_time, region, host)
+
+
+async def main():
+    while True:
+        triggers = get_zabbix_triggers(zabbix_user, zabbix_password, filter_descriptions, domains)
+        #triggers = [{'new_triggers': [{'trigger_id': '485964', 'description': 'No main power -', 'host_name': 'knock-olt-zr-ce.te.clb', 'region': 'TE', 'last_change_datetime': datetime.datetime(2024, 2, 20, 4, 34, 40)}, {'trigger_id': '485544', 'description': 'No main power -', 'host_name': 'sw-zr-no-1.te.clb', 'region': 'TE', 'last_change_datetime': datetime.datetime(2024, 2, 20, 4, 34, 40)}], 'resolved_triggers': []}]
+        print(triggers)
+
+        if triggers:
+            new_triggers = triggers[0]['new_triggers']
+            resolved_triggers = triggers[0]['resolved_triggers']
+
+            tasks = [process_trigger(trigger, zabbix_url, zabbix_user, zabbix_password, exceptions, core_mac_dict, community_string, version, model_oid) for trigger in new_triggers]
+            completed_tasks = await asyncio.gather(*tasks)
+
+            for trigger in resolved_triggers:
+                await close_trigger(trigger['last_change_datetime'], get_region(zabbix_user, zabbix_password, trigger['host_name']), trigger['host_name'])
+
+        await asyncio.sleep(int(time_sleep))
+
+if __name__ == "__main__":
+    asyncio.run(main())
 # obj = BDCOM(ip, community_string, version, core_mac_dict, zabbix_url, zabbix_user, zabbix_password, "3310B")
 # print(obj.get_active_onu())
 
