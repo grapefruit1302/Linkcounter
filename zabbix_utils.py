@@ -272,31 +272,6 @@ def transform_host_name(host_name, exceptions):
         return host_name
 
 
-if __name__ == "__main__":
-    api_url = 'https://zabbix6.columbus.te.ua/api_jsonrpc.php'
-    username = 'yu.petrovskyi'
-    password = '7N2_55c!vDg@Kc'
-    zabbix = MyZabbixAPI(api_url, username, password)
-    zabbix.login()
-    trigger_id = '11'
 
-    # print(zabbix.process_triggers())
-    
-    # if __name__ == "__main__":
-#     api_url = 'https://zabbix6.columbus.te.ua/api_jsonrpc.php'
-#     username = 'yu.petrovskyi'
-#     password = '7N2_55c!vDg@Kc'
-#     zabbix = MyZabbixAPI(api_url, username, password)
-#     zabbix.login()
-#     trigger_id = '11'
-#     comment_text = "Тестовий коментар"
-
-#     result = zabbix.comment_trigger(trigger_id, comment_text)
-
-#         # Перевірка результату
-#     if 'result' in result:
-#         print("Тригер успішно коментований.")
-#     else:
-#         print("Помилка: ", result['error']['data'])
 
 
